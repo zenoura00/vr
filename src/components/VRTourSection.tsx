@@ -22,44 +22,98 @@ export default function VRTourSection() {
     animationId: number;
   } | null>(null);
 
-  // Handle fullscreen toggle
+  // Check if device supports native fullscreen
+  const supportsFullscreen = typeof document !== 'undefined' &&
+    (document.documentElement.requestFullscreen ||
+     (document.documentElement as any).webkitRequestFullscreen);
+
+  // Handle fullscreen toggle - with mobile fallback
   const toggleFullscreen = useCallback(() => {
     if (!vrWrapperRef.current) return;
 
-    if (!document.fullscreenElement) {
-      vrWrapperRef.current.requestFullscreen().then(() => {
+    if (!isFullscreen) {
+      // Try native fullscreen first
+      if ('requestFullscreen' in vrWrapperRef.current) {
+        vrWrapperRef.current.requestFullscreen().catch(() => {
+          // Fallback to CSS fullscreen
+          setIsFullscreen(true);
+        });
+      } else if ((vrWrapperRef.current as any).webkitRequestFullscreen) {
+        (vrWrapperRef.current as any).webkitRequestFullscreen();
+      } else {
+        // CSS fallback for iOS
         setIsFullscreen(true);
-      }).catch((err) => {
-        console.error("Error entering fullscreen:", err);
-      });
+      }
     } else {
-      document.exitFullscreen().then(() => {
-        setIsFullscreen(false);
-      }).catch((err) => {
-        console.error("Error exiting fullscreen:", err);
-      });
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      } else if ((document as any).webkitFullscreenElement) {
+        (document as any).webkitExitFullscreen();
+      }
+      setIsFullscreen(false);
     }
-  }, []);
+  }, [isFullscreen]);
 
   // Listen for fullscreen changes
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      // Trigger resize when fullscreen changes
-      if (sceneRef.current && containerRef.current) {
-        const newWidth = containerRef.current.clientWidth;
-        const newHeight = containerRef.current.clientHeight;
-        sceneRef.current.camera.aspect = newWidth / newHeight;
-        sceneRef.current.camera.updateProjectionMatrix();
-        sceneRef.current.renderer.setSize(newWidth, newHeight);
+      const isNativeFullscreen = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      if (!isNativeFullscreen && isFullscreen) {
+        setIsFullscreen(false);
       }
+      // Trigger resize
+      setTimeout(() => {
+        if (sceneRef.current && containerRef.current) {
+          const newWidth = containerRef.current.clientWidth;
+          const newHeight = containerRef.current.clientHeight;
+          sceneRef.current.camera.aspect = newWidth / newHeight;
+          sceneRef.current.camera.updateProjectionMatrix();
+          sceneRef.current.renderer.setSize(newWidth, newHeight);
+        }
+      }, 100);
     };
 
     document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
     return () => {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
     };
-  }, []);
+  }, [isFullscreen]);
+
+  // Handle escape key and back button for CSS fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen && !document.fullscreenElement) {
+        setIsFullscreen(false);
+      }
+    };
+
+    const handlePopState = () => {
+      if (isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [isFullscreen]);
+
+  // Resize handler for fullscreen changes
+  useEffect(() => {
+    if (sceneRef.current && containerRef.current) {
+      const newWidth = containerRef.current.clientWidth;
+      const newHeight = containerRef.current.clientHeight;
+      sceneRef.current.camera.aspect = newWidth / newHeight;
+      sceneRef.current.camera.updateProjectionMatrix();
+      sceneRef.current.renderer.setSize(newWidth, newHeight);
+    }
+  }, [isFullscreen]);
 
   // Initialize Three.js scene
   useEffect(() => {
@@ -74,7 +128,7 @@ export default function VRTourSection() {
     const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
     camera.position.set(0, 0, 0.1);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);
@@ -89,6 +143,8 @@ export default function VRTourSection() {
       PANORAMA_URL,
       (texture) => {
         texture.colorSpace = THREE.SRGBColorSpace;
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
         const material = new THREE.MeshBasicMaterial({ map: texture });
         const sphere = new THREE.Mesh(geometry, material);
         scene.add(sphere);
@@ -106,17 +162,16 @@ export default function VRTourSection() {
       }
     );
 
-    // Add ambient light
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1);
-    scene.add(ambientLight);
-
     // Controls for looking around - optimized for touch
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableZoom = true;
     controls.enablePan = false;
-    controls.rotateSpeed = -0.3;
+    controls.rotateSpeed = -0.5;
+    controls.zoomSpeed = 0.5;
     controls.minDistance = 0.1;
     controls.maxDistance = 100;
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
     controls.touches = {
       ONE: THREE.TOUCH.ROTATE,
       TWO: THREE.TOUCH.DOLLY_PAN
@@ -169,30 +224,34 @@ export default function VRTourSection() {
   };
 
   const handleExitVR = () => {
-    // Exit fullscreen if active
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
+    if (document.fullscreenElement || (document as any).webkitFullscreenElement) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if ((document as any).webkitExitFullscreen) {
+        (document as any).webkitExitFullscreen();
+      }
     }
+    setIsFullscreen(false);
     setIsVRActive(false);
     setIsLoading(true);
     setLoadProgress(0);
   };
 
   return (
-    <section className="relative min-h-[50vh] md:min-h-[60vh] bg-gradient-to-b from-gray-50 to-white flex items-center justify-center">
+    <section className={`relative bg-gradient-to-b from-gray-50 to-white flex items-center justify-center ${isFullscreen ? 'fixed inset-0 z-[9999] bg-black' : 'min-h-[50vh] md:min-h-[60vh]'}`}>
       {/* VR Tour Embed Area */}
-      <div className="w-full max-w-6xl mx-auto px-2 sm:px-4 py-6 md:py-12">
+      <div className={`w-full ${isFullscreen ? 'h-full' : 'max-w-6xl mx-auto px-2 sm:px-4 py-6 md:py-12'}`}>
         <div
           ref={vrWrapperRef}
-          className={`bg-white rounded-xl md:rounded-2xl shadow-xl md:shadow-2xl overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50 rounded-none max-w-none' : ''}`}
+          className={`bg-white overflow-hidden ${isFullscreen ? 'h-full rounded-none' : 'rounded-xl md:rounded-2xl shadow-xl md:shadow-2xl'}`}
         >
           {/* VR Tour Header */}
-          <div className="bg-gradient-to-r from-orange-500 to-orange-600 p-3 md:p-4 text-white">
+          <div className={`bg-gradient-to-r from-orange-500 to-orange-600 text-white ${isFullscreen ? 'p-2 md:p-3' : 'p-3 md:p-4'}`}>
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 md:gap-3 min-w-0">
-                <div className="w-8 h-8 md:w-10 md:h-10 bg-white/20 rounded-lg flex items-center justify-center shrink-0">
+                <div className={`bg-white/20 rounded-lg flex items-center justify-center shrink-0 ${isFullscreen ? 'w-7 h-7' : 'w-8 h-8 md:w-10 md:h-10'}`}>
                   <svg
-                    className="w-5 h-5 md:w-6 md:h-6"
+                    className={isFullscreen ? 'w-4 h-4' : 'w-5 h-5 md:w-6 md:h-6'}
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
@@ -206,8 +265,8 @@ export default function VRTourSection() {
                   </svg>
                 </div>
                 <div className="min-w-0">
-                  <h2 className="font-bold text-sm md:text-lg truncate">VR Factory Tour</h2>
-                  <p className="text-xs md:text-sm text-white/80 truncate hidden sm:block">Explore our solar manufacturing facility</p>
+                  <h2 className={`font-bold truncate ${isFullscreen ? 'text-xs' : 'text-sm md:text-lg'}`}>VR Factory Tour</h2>
+                  {!isFullscreen && <p className="text-xs md:text-sm text-white/80 truncate hidden sm:block">360° Experience</p>}
                 </div>
               </div>
               <div className="flex items-center gap-1 md:gap-2 shrink-0">
@@ -215,31 +274,24 @@ export default function VRTourSection() {
                   <button
                     type="button"
                     onClick={handleExitVR}
-                    className="px-2 md:px-4 py-1.5 md:py-2 bg-white/20 hover:bg-white/30 rounded-lg text-xs md:text-sm font-medium transition-colors"
+                    className={`bg-white/20 hover:bg-white/30 rounded-lg font-medium transition-colors ${isFullscreen ? 'px-2 py-1 text-[10px]' : 'px-2 md:px-4 py-1.5 md:py-2 text-xs md:text-sm'}`}
                   >
-                    <span className="hidden sm:inline">Exit Tour</span>
-                    <span className="sm:hidden">Exit</span>
+                    Exit
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={toggleFullscreen}
-                  className="p-1.5 md:px-4 md:py-2 bg-white/20 hover:bg-white/30 rounded-lg text-xs md:text-sm font-medium transition-colors flex items-center gap-1 md:gap-2"
+                  className={`bg-white/20 hover:bg-white/30 rounded-lg font-medium transition-colors flex items-center gap-1 ${isFullscreen ? 'px-2 py-1 text-[10px]' : 'p-1.5 md:px-3 md:py-2 text-xs md:text-sm'}`}
                 >
                   {isFullscreen ? (
-                    <>
-                      <svg className="w-4 h-4 md:w-4 md:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                      <span className="hidden md:inline">Exit Fullscreen</span>
-                    </>
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
                   ) : (
-                    <>
-                      <svg className="w-4 h-4 md:w-4 md:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-                      </svg>
-                      <span className="hidden md:inline">Fullscreen</span>
-                    </>
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                    </svg>
                   )}
                 </button>
                 {!isVRActive && (
@@ -248,8 +300,7 @@ export default function VRTourSection() {
                     onClick={handleEnterVR}
                     className="px-3 md:px-4 py-1.5 md:py-2 bg-white text-orange-600 rounded-lg text-xs md:text-sm font-medium hover:bg-orange-50 transition-colors"
                   >
-                    <span className="hidden sm:inline">Start Tour</span>
-                    <span className="sm:hidden">Start</span>
+                    Start
                   </button>
                 )}
               </div>
@@ -259,66 +310,31 @@ export default function VRTourSection() {
           {/* VR Tour Content */}
           <div
             ref={containerRef}
-            className={`relative bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100vh-60px)] md:h-[calc(100vh-80px)]' : 'aspect-[4/3] md:aspect-video'}`}
+            className={`relative bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100vh-50px)] md:h-[calc(100vh-60px)]' : 'aspect-[16/9] md:aspect-video'}`}
           >
             {/* Initial State - Before entering VR */}
             {!isVRActive && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/5 z-10 p-4">
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 z-10 p-4">
                 <div className="relative">
-                  {/* VR Headset Icon */}
                   <svg
                     className="w-16 h-16 md:w-24 md:h-24 text-orange-500 animate-pulse"
                     viewBox="0 0 100 100"
                     fill="none"
                   >
-                    <rect
-                      x="10"
-                      y="30"
-                      width="80"
-                      height="40"
-                      rx="10"
-                      fill="currentColor"
-                      opacity="0.2"
-                    />
-                    <rect
-                      x="15"
-                      y="35"
-                      width="70"
-                      height="30"
-                      rx="8"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                    />
+                    <rect x="10" y="30" width="80" height="40" rx="10" fill="currentColor" opacity="0.2" />
+                    <rect x="15" y="35" width="70" height="30" rx="8" stroke="currentColor" strokeWidth="3" />
                     <circle cx="35" cy="50" r="10" fill="currentColor" />
                     <circle cx="65" cy="50" r="10" fill="currentColor" />
-                    <path
-                      d="M10 45 L5 50 L10 55"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M90 45 L95 50 L90 55"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M30 25 Q50 15 70 25"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      fill="none"
-                      strokeLinecap="round"
-                    />
+                    <path d="M10 45 L5 50 L10 55" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M90 45 L95 50 L90 55" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M30 25 Q50 15 70 25" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" />
                   </svg>
                 </div>
                 <h3 className="mt-4 md:mt-6 text-lg md:text-xl font-semibold text-gray-700 text-center">
-                  Virtual Factory Tour
+                  Virtual Room Tour
                 </h3>
                 <p className="mt-2 text-sm md:text-base text-gray-500 text-center max-w-md px-4">
-                  Experience our state-of-the-art solar panel manufacturing facility in immersive 360° virtual reality
+                  Explore the room in immersive 360° virtual reality
                 </p>
                 <button
                   type="button"
@@ -334,69 +350,32 @@ export default function VRTourSection() {
             {isVRActive && isLoading && (
               <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center z-20">
                 <div className="text-center text-white">
-                  <div className="relative w-20 h-20 md:w-24 md:h-24 mx-auto mb-4">
-                    <svg className="w-20 h-20 md:w-24 md:h-24 transform -rotate-90">
-                      <circle
-                        cx="40"
-                        cy="40"
-                        r="35"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                        className="text-white/20 md:hidden"
-                      />
-                      <circle
-                        cx="40"
-                        cy="40"
-                        r="35"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                        strokeLinecap="round"
-                        className="text-orange-500 md:hidden"
-                        strokeDasharray={`${loadProgress * 2.2} 220`}
-                      />
-                      <circle
-                        cx="48"
-                        cy="48"
-                        r="40"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                        className="text-white/20 hidden md:block"
-                      />
-                      <circle
-                        cx="48"
-                        cy="48"
-                        r="40"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                        fill="none"
-                        strokeLinecap="round"
-                        className="text-orange-500 hidden md:block"
-                        strokeDasharray={`${loadProgress * 2.51} 251`}
-                      />
-                    </svg>
-                    <span className="absolute inset-0 flex items-center justify-center text-base md:text-lg font-bold">
+                  <div className="relative w-16 h-16 md:w-20 md:h-20 mx-auto mb-4">
+                    <div className="absolute inset-0 border-4 border-white/20 rounded-full"></div>
+                    <div
+                      className="absolute inset-0 border-4 border-orange-500 rounded-full animate-spin"
+                      style={{
+                        borderTopColor: 'transparent',
+                        borderRightColor: 'transparent',
+                        animationDuration: '1s'
+                      }}
+                    ></div>
+                    <span className="absolute inset-0 flex items-center justify-center text-sm md:text-base font-bold">
                       {loadProgress}%
                     </span>
                   </div>
-                  <p className="text-base md:text-lg">Loading VR Environment...</p>
-                  <p className="text-xs md:text-sm text-gray-400 mt-2">Preparing 360° factory view</p>
+                  <p className="text-sm md:text-base">Loading...</p>
                 </div>
               </div>
             )}
 
             {/* VR Active Overlay Controls */}
             {isVRActive && !isLoading && (
-              <div className="absolute bottom-2 md:bottom-4 left-2 md:left-4 right-2 md:right-4 flex justify-between items-center z-10 pointer-events-none">
-                <div className="bg-black/50 backdrop-blur-sm rounded-lg px-2 md:px-4 py-1.5 md:py-2 pointer-events-auto">
-                  <p className="text-white text-xs md:text-sm">
-                    <span className="hidden sm:inline">Drag to look around</span>
-                    <span className="sm:hidden">Touch & drag</span>
-                  </p>
+              <div className={`absolute left-2 right-2 flex justify-between items-center z-10 pointer-events-none ${isFullscreen ? 'bottom-2' : 'bottom-2 md:bottom-4'}`}>
+                <div className="bg-black/60 backdrop-blur-sm rounded-lg px-2 py-1 md:px-3 md:py-1.5 pointer-events-auto">
+                  <p className="text-white text-[10px] md:text-xs">Drag to look</p>
                 </div>
-                <div className="flex gap-1 md:gap-2 pointer-events-auto">
+                <div className="flex gap-1 pointer-events-auto">
                   <button
                     type="button"
                     onClick={() => {
@@ -405,11 +384,10 @@ export default function VRTourSection() {
                         sceneRef.current.camera.updateProjectionMatrix();
                       }
                     }}
-                    className="bg-black/50 backdrop-blur-sm rounded-lg p-2 md:px-3 md:py-2 text-white hover:bg-black/70 transition-colors"
-                    title="Zoom In"
+                    className="bg-black/60 backdrop-blur-sm rounded-lg p-1.5 md:p-2 text-white active:bg-black/80"
                   >
-                    <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12m6-6H6" />
                     </svg>
                   </button>
                   <button
@@ -420,10 +398,9 @@ export default function VRTourSection() {
                         sceneRef.current.camera.updateProjectionMatrix();
                       }
                     }}
-                    className="bg-black/50 backdrop-blur-sm rounded-lg p-2 md:px-3 md:py-2 text-white hover:bg-black/70 transition-colors"
-                    title="Zoom Out"
+                    className="bg-black/60 backdrop-blur-sm rounded-lg p-1.5 md:p-2 text-white active:bg-black/80"
                   >
-                    <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
                     </svg>
                   </button>
@@ -434,21 +411,15 @@ export default function VRTourSection() {
 
           {/* VR Tour Controls - Hide in fullscreen */}
           {!isFullscreen && (
-            <div className="bg-gray-50 p-2 md:p-4 flex items-center justify-between">
-              <div className="flex items-center gap-2 md:gap-4">
-                <div className="flex items-center gap-1.5 md:gap-2">
-                  <div className={`w-2 h-2 md:w-3 md:h-3 rounded-full ${isVRActive && !isLoading ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
-                  <span className="text-xs md:text-sm text-gray-600">
-                    {isVRActive && !isLoading ? 'Active' : 'Ready'}
-                  </span>
-                </div>
+            <div className="bg-gray-50 p-2 md:p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${isVRActive && !isLoading ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+                <span className="text-xs text-gray-600">
+                  {isVRActive && !isLoading ? 'Active' : 'Ready'}
+                </span>
               </div>
-              <div className="flex items-center gap-2 md:gap-3 text-xs md:text-sm text-gray-500">
-                <span className="hidden sm:inline">Drag to look</span>
-                <span className="hidden sm:inline">•</span>
-                <span className="hidden md:inline">Pinch to zoom</span>
-                <span className="hidden md:inline">•</span>
-                <span>360° view</span>
+              <div className="text-xs text-gray-500">
+                360° VR Tour
               </div>
             </div>
           )}
@@ -456,33 +427,31 @@ export default function VRTourSection() {
 
         {/* Feature Cards - Hide in fullscreen */}
         {!isFullscreen && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-6 mt-4 md:mt-8">
-            <div className="bg-white rounded-lg md:rounded-xl p-4 md:p-6 shadow-md md:shadow-lg border border-gray-100">
-              <div className="w-10 h-10 md:w-12 md:h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-3 md:mb-4">
-                <svg className="w-5 h-5 md:w-6 md:h-6 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+          <div className="grid grid-cols-3 gap-2 md:gap-4 mt-4 md:mt-6">
+            <div className="bg-white rounded-lg p-3 md:p-4 shadow-md border border-gray-100 text-center">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-orange-100 rounded-lg flex items-center justify-center mb-2 mx-auto">
+                <svg className="w-4 h-4 md:w-5 md:h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                 </svg>
               </div>
-              <h3 className="font-semibold text-gray-800 text-sm md:text-base mb-1 md:mb-2">Production Lines</h3>
-              <p className="text-xs md:text-sm text-gray-500">Explore our automated solar panel manufacturing lines</p>
+              <h3 className="font-semibold text-gray-800 text-xs md:text-sm">360° View</h3>
             </div>
-            <div className="bg-white rounded-lg md:rounded-xl p-4 md:p-6 shadow-md md:shadow-lg border border-gray-100">
-              <div className="w-10 h-10 md:w-12 md:h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-3 md:mb-4">
-                <svg className="w-5 h-5 md:w-6 md:h-6 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            <div className="bg-white rounded-lg p-3 md:p-4 shadow-md border border-gray-100 text-center">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-orange-100 rounded-lg flex items-center justify-center mb-2 mx-auto">
+                <svg className="w-4 h-4 md:w-5 md:h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                 </svg>
               </div>
-              <h3 className="font-semibold text-gray-800 text-sm md:text-base mb-1 md:mb-2">Quality Control</h3>
-              <p className="text-xs md:text-sm text-gray-500">See our rigorous testing and quality assurance processes</p>
+              <h3 className="font-semibold text-gray-800 text-xs md:text-sm">Mobile Ready</h3>
             </div>
-            <div className="bg-white rounded-lg md:rounded-xl p-4 md:p-6 shadow-md md:shadow-lg border border-gray-100">
-              <div className="w-10 h-10 md:w-12 md:h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-3 md:mb-4">
-                <svg className="w-5 h-5 md:w-6 md:h-6 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            <div className="bg-white rounded-lg p-3 md:p-4 shadow-md border border-gray-100 text-center">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-orange-100 rounded-lg flex items-center justify-center mb-2 mx-auto">
+                <svg className="w-4 h-4 md:w-5 md:h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
                 </svg>
               </div>
-              <h3 className="font-semibold text-gray-800 text-sm md:text-base mb-1 md:mb-2">Solar Innovation</h3>
-              <p className="text-xs md:text-sm text-gray-500">Discover our latest solar technology developments</p>
+              <h3 className="font-semibold text-gray-800 text-xs md:text-sm">Fullscreen</h3>
             </div>
           </div>
         )}
