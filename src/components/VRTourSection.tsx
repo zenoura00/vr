@@ -4,8 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-// 360° panoramic image of a solar factory
-const PANORAMA_URL = "https://images.unsplash.com/photo-1509391366360-2e959784a276?w=4096&h=2048&fit=crop";
+// 360° panoramic image - compressed local version
+const PANORAMA_URL = "/panorama.jpg";
 
 export default function VRTourSection() {
   const [isLoading, setIsLoading] = useState(true);
